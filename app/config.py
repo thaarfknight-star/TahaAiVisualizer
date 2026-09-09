@@ -25,6 +25,20 @@ MODES = [
     ("dots", "Dot Matrix"),
     ("spiral", "Spiral"),
     ("kaleidoscope", "Kaleidoscope"),
+    ("bars3d", "Perspective Bars"),
+    ("ring", "Pulse Rings"),
+    ("starburst", "Starburst"),
+    ("wavefill", "Filled Waveform"),
+    ("equalizer", "LED Equalizer"),
+    ("orbit", "Orbiting Dots"),
+    ("flower", "Flower Bloom"),
+    ("fireworks", "Fireworks"),
+    ("tunnel", "Tunnel"),
+    ("polygon", "Polygon Pulse"),
+    ("grid", "Reactive Grid"),
+    ("vortex", "Vortex"),
+    ("constellation", "Constellation"),
+    ("ribbon", "Ribbon Flow"),
 ]
 
 BACKGROUNDS = [
@@ -38,6 +52,15 @@ MIRROR_MODES = [
     ("none", "None"),
     ("vertical", "Vertical"),
     ("both", "Both"),
+]
+
+GRADIENT_PRESETS = [
+    ("Aurora", ["#a995ff", "#5ec8ff", "#7cf5c4"]),
+    ("Sunset", ["#ffd166", "#ff9ecb", "#ff6b6b"]),
+    ("Neon", ["#a995ff", "#ff6b6b"]),
+    ("Ocean", ["#5ec8ff", "#7cf5c4"]),
+    ("Fire", ["#ffd166", "#ff6b6b", "#c4ff6b"]),
+    ("Candy", ["#ff9ecb", "#a995ff", "#5ec8ff"]),
 ]
 
 PRESETS = {
@@ -60,6 +83,8 @@ PRESETS = {
 class Config:
     mode: str = "spectrum"
     accent: str = PALETTE[0]
+    color_mode: str = "solid"        # solid | gradient
+    gradient_colors: List[str] = field(default_factory=lambda: ["#a995ff", "#5ec8ff", "#ff6b6b"])
     background: str = "solid"
     background_image: str = ""
     sensitivity: float = 1.0

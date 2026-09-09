@@ -17,7 +17,7 @@ QLabel#Desc, QLabel#Hint { color: #9895a6; font-size: 11px; }
 QLabel#TitleLabel { font-size: 13px; font-weight: 800; }
 QLabel#SmallMuted { color: #9895a6; font-size: 10px; }
 
-QPushButton { background: #14141c; border: 1px solid #292834; border-radius: 9px; padding: 7px 12px; min-height: 22px; }
+QPushButton { background: #14141c; border: 1px solid #292834; border-radius: 9px; padding: 6px 8px; min-height: 20px; min-width: 0; font-size: 11px; }
 QPushButton:hover { border-color: #7c7690; }
 QPushButton:pressed { background: #191922; }
 QPushButton#Primary { background: #a995ff; color: #13101a; font-weight: 800; border: none; }

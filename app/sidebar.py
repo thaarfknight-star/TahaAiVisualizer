@@ -3,15 +3,15 @@ from __future__ import annotations
 
 import webbrowser
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox, QColorDialog, QComboBox, QFileDialog, QFrame, QGridLayout,
-    QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QSizePolicy,
-    QSlider, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton,
+    QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 
-from .config import Config, PALETTE, MODES, BACKGROUNDS, MIRROR_MODES, PRESETS
+from .config import Config, PALETTE, MODES, BACKGROUNDS, MIRROR_MODES, PRESETS, GRADIENT_PRESETS
 
 
 def _hline() -> QFrame:
@@ -80,13 +80,15 @@ class Sidebar(QWidget):
         self.audio = audio
         self.visualizer = visualizer
         self.setObjectName("Sidebar")
-        self.setFixedWidth(360)
+        self.setFixedWidth(400)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         outer.addWidget(scroll)
 
         content = QWidget()
@@ -98,6 +100,7 @@ class Sidebar(QWidget):
         self._build_header()
         self._build_spotify_section()
         self._build_audio_section()
+        self._build_playlist_section()
         self.col.addWidget(_hline())
         self._build_style_section()
         self._build_customization_section()
@@ -157,12 +160,9 @@ class Sidebar(QWidget):
     def _build_audio_section(self) -> None:
         self.col.addWidget(_label("Audio source"))
         row = QHBoxLayout()
-        choose_btn = QPushButton("Choose audio")
-        choose_btn.setObjectName("Primary")
-        choose_btn.clicked.connect(self._choose_audio_file)
         sys_btn = QPushButton("System audio")
+        sys_btn.setObjectName("Primary")
         sys_btn.clicked.connect(self._start_system_audio)
-        row.addWidget(choose_btn)
         row.addWidget(sys_btn)
         self.col.addLayout(row)
 
@@ -174,20 +174,6 @@ class Sidebar(QWidget):
         stop_btn = QPushButton("قطع صدا و بازگشت به Demo")
         stop_btn.clicked.connect(self._stop_audio)
         self.col.addWidget(stop_btn)
-
-    def _choose_audio_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "انتخاب فایل صوتی", "",
-            "Audio files (*.mp3 *.wav *.ogg *.flac *.m4a *.aac)"
-        )
-        if not path:
-            return
-        ok = self.audio.play_file(path)
-        if ok:
-            self.config.demo_mode = False
-            self.audio_info.setText(f"در حال پخش: {self.audio.file_name}")
-        else:
-            self.audio_info.setText(self.audio.error or "خطا در پخش فایل.")
 
     def _start_system_audio(self) -> None:
         ok = self.audio.start_system_audio()
@@ -201,6 +187,137 @@ class Sidebar(QWidget):
         self.audio.stop()
         self.config.demo_mode = True
         self.audio_info.setText("Demo فعال است. منبع صوتی متصل نیست.")
+        self._refresh_playlist_ui()
+
+    # ------------------------------------------------------------------ #
+    def _build_playlist_section(self) -> None:
+        self.col.addWidget(_hline())
+        self.col.addWidget(_label("Playlist"))
+
+        add_btn = QPushButton("افزودن آهنگ (یک یا چند فایل)")
+        add_btn.setObjectName("Primary")
+        add_btn.clicked.connect(self._add_tracks)
+        self.col.addWidget(add_btn)
+
+        self.playlist_widget = QListWidget()
+        self.playlist_widget.setFixedHeight(140)
+        self.playlist_widget.itemDoubleClicked.connect(self._play_selected_track)
+        self.col.addWidget(self.playlist_widget)
+
+        controls = QHBoxLayout()
+        self.prev_btn = QPushButton("⏮")
+        self.play_pause_btn = QPushButton("⏯")
+        self.next_btn = QPushButton("⏭")
+        for b in (self.prev_btn, self.play_pause_btn, self.next_btn):
+            b.setObjectName("IconBtn")
+            b.setFixedWidth(46)
+        self.prev_btn.clicked.connect(self._on_prev)
+        self.play_pause_btn.clicked.connect(self._on_play_pause)
+        self.next_btn.clicked.connect(self._on_next)
+        controls.addWidget(self.prev_btn)
+        controls.addWidget(self.play_pause_btn)
+        controls.addWidget(self.next_btn)
+        controls.addStretch(1)
+        self.col.addLayout(controls)
+
+        manage_row = QGridLayout()
+        manage_row.setSpacing(6)
+        remove_btn = QPushButton("حذف انتخاب‌شده")
+        remove_btn.clicked.connect(self._remove_selected_track)
+        clear_btn = QPushButton("پاک کردن لیست")
+        clear_btn.clicked.connect(self._clear_playlist)
+        manage_row.addWidget(remove_btn, 0, 0)
+        manage_row.addWidget(clear_btn, 0, 1)
+        manage_row.setColumnStretch(0, 1)
+        manage_row.setColumnStretch(1, 1)
+        self.col.addLayout(manage_row)
+
+        toggles_row = QHBoxLayout()
+        self.repeat_check = QCheckBox("تکرار پلی‌لیست")
+        self.repeat_check.setChecked(self.audio.repeat_all)
+        self.repeat_check.toggled.connect(lambda v: setattr(self.audio, "repeat_all", v))
+        self.shuffle_check = QCheckBox("پخش تصادفی")
+        self.shuffle_check.setChecked(self.audio.shuffle)
+        self.shuffle_check.toggled.connect(lambda v: setattr(self.audio, "shuffle", v))
+        toggles_row.addWidget(self.repeat_check)
+        toggles_row.addWidget(self.shuffle_check)
+        self.col.addLayout(toggles_row)
+
+        # Polls for natural track-end (to auto-advance) and keeps the
+        # playlist UI (bold current item, play/pause icon, status text) fresh.
+        self._playlist_timer = QTimer(self)
+        self._playlist_timer.timeout.connect(self._poll_playlist)
+        self._playlist_timer.start(250)
+
+    def _add_tracks(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "انتخاب یک یا چند فایل آهنگ", "",
+            "Audio files (*.mp3 *.wav *.ogg *.flac *.m4a *.aac)"
+        )
+        if not paths:
+            return
+        for path in paths:
+            name = path.replace("\\", "/").split("/")[-1]
+            self.playlist_widget.addItem(QListWidgetItem(name))
+        ok = self.audio.add_to_playlist(paths)
+        if ok:
+            self.config.demo_mode = False
+            self.audio_info.setText(f"در حال پخش: {self.audio.file_name}")
+        else:
+            self.audio_info.setText(self.audio.error or "خطا در افزودن فایل.")
+        self._refresh_playlist_ui()
+
+    def _play_selected_track(self, item: QListWidgetItem) -> None:
+        index = self.playlist_widget.row(item)
+        if self.audio.play_index(index):
+            self.config.demo_mode = False
+        self._refresh_playlist_ui()
+
+    def _on_prev(self) -> None:
+        self.audio.prev_track()
+        self._refresh_playlist_ui()
+
+    def _on_next(self) -> None:
+        if not self.audio.next_track():
+            self.audio_info.setText("پایان پلی‌لیست.")
+        self._refresh_playlist_ui()
+
+    def _on_play_pause(self) -> None:
+        self.audio.play_pause_toggle()
+        if self.audio.mode == "file":
+            self.config.demo_mode = False
+        self._refresh_playlist_ui()
+
+    def _remove_selected_track(self) -> None:
+        row = self.playlist_widget.currentRow()
+        if row < 0:
+            return
+        self.audio.remove_from_playlist(row)
+        self.playlist_widget.takeItem(row)
+        self._refresh_playlist_ui()
+
+    def _clear_playlist(self) -> None:
+        self.audio.clear_playlist()
+        self.playlist_widget.clear()
+        self.config.demo_mode = True
+        self.audio_info.setText("Demo فعال است. منبع صوتی متصل نیست.")
+
+    def _poll_playlist(self) -> None:
+        if self.audio.poll_track_finished():
+            self._refresh_playlist_ui()
+        if self.audio.mode == "file" and self.audio.playlist:
+            state = "مکث" if self.audio._paused else "پخش"
+            pos = f"{self.audio.playlist_index + 1}/{len(self.audio.playlist)}"
+            self.audio_info.setText(f"{state}: {self.audio.file_name} ({pos})")
+
+    def _refresh_playlist_ui(self) -> None:
+        for i in range(self.playlist_widget.count()):
+            item = self.playlist_widget.item(i)
+            font = item.font()
+            font.setBold(self.audio.mode == "file" and i == self.audio.playlist_index)
+            item.setFont(font)
+        playing = self.audio.mode == "file" and not self.audio._paused
+        self.play_pause_btn.setText("⏸" if playing else "⏯")
 
     # ------------------------------------------------------------------ #
     def _build_style_section(self) -> None:
@@ -215,22 +332,67 @@ class Sidebar(QWidget):
         self.col.addWidget(self.mode_combo)
 
     def _build_customization_section(self) -> None:
+        self.col.addWidget(_label("Color mode"))
+        self.colormode_combo = QComboBox()
+        self.colormode_combo.addItem("تک‌رنگ (Solid)", "solid")
+        self.colormode_combo.addItem("گرادیان (Gradient)", "gradient")
+        self.colormode_combo.setCurrentIndex(0 if self.config.color_mode == "solid" else 1)
+        self.colormode_combo.currentIndexChanged.connect(self._on_color_mode_changed)
+        self.col.addWidget(self.colormode_combo)
+
         self.col.addWidget(_label("Accent color", ))
         colors_row = QGridLayout()
         colors_row.setSpacing(5)
+        cols = 4
         self._color_buttons = []
         for i, color in enumerate(PALETTE):
             btn = QPushButton()
             btn.setFixedHeight(27)
+            btn.setMinimumWidth(0)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.setStyleSheet(f"background:{color};border-radius:6px;border:2px solid transparent;")
             btn.clicked.connect(lambda _=False, c=color: self._set_accent(c))
-            colors_row.addWidget(btn, 0, i)
+            colors_row.addWidget(btn, i // cols, i % cols)
             self._color_buttons.append((btn, color))
+        for c in range(cols):
+            colors_row.setColumnStretch(c, 1)
         self.col.addLayout(colors_row)
 
         custom_btn = QPushButton("انتخاب رنگ دلخواه…")
         custom_btn.clicked.connect(self._pick_custom_color)
         self.col.addWidget(custom_btn)
+        self.solid_widgets = [custom_btn]
+
+        # ---- gradient editor ------------------------------------------- #
+        self.gradient_box = QWidget()
+        grad_col = QVBoxLayout(self.gradient_box)
+        grad_col.setContentsMargins(0, 6, 0, 0)
+        grad_col.setSpacing(6)
+
+        grad_col.addWidget(_label("Gradient presets"))
+        self.gradient_preset_combo = QComboBox()
+        for name, colors in GRADIENT_PRESETS:
+            self.gradient_preset_combo.addItem(name, colors)
+        self.gradient_preset_combo.currentIndexChanged.connect(self._apply_gradient_preset)
+        grad_col.addWidget(self.gradient_preset_combo)
+
+        grad_col.addWidget(_label("Gradient stops"))
+        self.gradient_stops_layout = QGridLayout()
+        self.gradient_stops_layout.setSpacing(5)
+        grad_col.addLayout(self.gradient_stops_layout)
+
+        stop_btns = QHBoxLayout()
+        add_stop_btn = QPushButton("+ افزودن رنگ")
+        add_stop_btn.clicked.connect(self._add_gradient_stop)
+        remove_stop_btn = QPushButton("- حذف آخرین")
+        remove_stop_btn.clicked.connect(self._remove_gradient_stop)
+        stop_btns.addWidget(add_stop_btn)
+        stop_btns.addWidget(remove_stop_btn)
+        grad_col.addLayout(stop_btns)
+
+        self.col.addWidget(self.gradient_box)
+        self._rebuild_gradient_stops()
+        self._update_color_mode_visibility()
 
         self.col.addWidget(_label("Background"))
         self.bg_combo = QComboBox()
@@ -280,6 +442,63 @@ class Sidebar(QWidget):
         color = QColorDialog.getColor(QColor(self.config.accent), self, "انتخاب رنگ")
         if color.isValid():
             self._set_accent(color.name())
+
+    # ---- gradient / color-mode helpers -------------------------------- #
+    def _on_color_mode_changed(self, index: int) -> None:
+        self.config.color_mode = self.colormode_combo.itemData(index)
+        self._update_color_mode_visibility()
+
+    def _update_color_mode_visibility(self) -> None:
+        is_gradient = self.config.color_mode == "gradient"
+        self.gradient_box.setVisible(is_gradient)
+        for w in self.solid_widgets:
+            w.setVisible(not is_gradient)
+        for btn, _c in self._color_buttons:
+            btn.setVisible(not is_gradient)
+
+    def _rebuild_gradient_stops(self) -> None:
+        while self.gradient_stops_layout.count():
+            item = self.gradient_stops_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        cols = 4
+        for i, color in enumerate(self.config.gradient_colors):
+            btn = QPushButton()
+            btn.setFixedHeight(27)
+            btn.setMinimumWidth(0)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.setStyleSheet(f"background:{color};border-radius:6px;border:2px solid #fff;")
+            btn.setToolTip(f"استاپ {i + 1} — کلیک برای تغییر رنگ")
+            btn.clicked.connect(lambda _=False, idx=i: self._pick_gradient_stop_color(idx))
+            self.gradient_stops_layout.addWidget(btn, i // cols, i % cols)
+        for c in range(cols):
+            self.gradient_stops_layout.setColumnStretch(c, 1)
+
+    def _pick_gradient_stop_color(self, idx: int) -> None:
+        current = self.config.gradient_colors[idx]
+        color = QColorDialog.getColor(QColor(current), self, "انتخاب رنگ گرادیان")
+        if color.isValid():
+            self.config.gradient_colors[idx] = color.name()
+            self._rebuild_gradient_stops()
+
+    def _add_gradient_stop(self) -> None:
+        if len(self.config.gradient_colors) >= 6:
+            return
+        self.config.gradient_colors.append(self.config.accent)
+        self._rebuild_gradient_stops()
+
+    def _remove_gradient_stop(self) -> None:
+        if len(self.config.gradient_colors) <= 2:
+            return
+        self.config.gradient_colors.pop()
+        self._rebuild_gradient_stops()
+
+    def _apply_gradient_preset(self, index: int) -> None:
+        colors = self.gradient_preset_combo.itemData(index)
+        if not colors:
+            return
+        self.config.gradient_colors = list(colors)
+        self._rebuild_gradient_stops()
 
     def _on_bg_changed(self, index: int) -> None:
         value = self.bg_combo.itemData(index)
@@ -360,8 +579,11 @@ class Sidebar(QWidget):
         grid.setSpacing(6)
         for i, name in enumerate(PRESETS):
             btn = QPushButton(name)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.clicked.connect(lambda _=False, n=name: self._apply_preset(n))
-            grid.addWidget(btn, i // 3, i % 3)
+            grid.addWidget(btn, i // 2, i % 2)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
         self.col.addLayout(grid)
 
         reset_btn = QPushButton("Reset customization")
@@ -423,6 +645,9 @@ class Sidebar(QWidget):
         self.bg_image_btn.setVisible(cfg.background == "image")
         self.mirror_combo.setCurrentIndex([m[0] for m in MIRROR_MODES].index(cfg.mirror))
         self._set_accent(cfg.accent)
+        self.colormode_combo.setCurrentIndex(0 if cfg.color_mode == "solid" else 1)
+        self._rebuild_gradient_stops()
+        self._update_color_mode_visibility()
 
         self._sliders["sensitivity"].set_value(cfg.sensitivity)
         self._sliders["smoothing"].set_value(cfg.smoothing)

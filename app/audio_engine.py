@@ -9,8 +9,9 @@ starts (in demo mode) on machines where they are missing or unsupported.
 """
 from __future__ import annotations
 
+import random
 import threading
-from typing import Optional
+from typing import List, Optional
 
 import numpy as np
 
@@ -47,6 +48,14 @@ class AudioEngine:
         self._stream = None
         self._playback_data: Optional[np.ndarray] = None
         self._playback_pos = 0
+        self._paused = False
+        self._track_ended = False
+
+        # Playlist state -------------------------------------------------
+        self.playlist: List[str] = []
+        self.playlist_index: int = -1
+        self.repeat_all: bool = True
+        self.shuffle: bool = False
 
         self._loopback_thread: Optional[threading.Thread] = None
         self._loopback_stop = threading.Event()
@@ -59,50 +68,94 @@ class AudioEngine:
         self._stop_loopback()
         self.mode = "demo"
         self.file_name = None
+        self._paused = False
 
     def play_file(self, path: str) -> bool:
-        self._stop_stream()
+        """Play a single, standalone file (replaces any existing playlist)."""
+        self.playlist = [path]
+        self.playlist_index = 0
+        return self._play_current_index()
+
+    # -- playlist -------------------------------------------------------- #
+    def add_to_playlist(self, paths: List[str]) -> bool:
+        """Add one or more files to the playlist. Starts playback if idle."""
         self._stop_loopback()
+        was_empty = not self.playlist
+        self.playlist.extend(paths)
+        if was_empty and self.playlist:
+            self.playlist_index = 0
+            return self._play_current_index()
+        return True
 
-        if sf is None or sd is None:
-            self.error = "برای پخش فایل باید pysoundfile و sounddevice نصب باشند."
+    def play_index(self, index: int) -> bool:
+        if not (0 <= index < len(self.playlist)):
             return False
+        self.playlist_index = index
+        return self._play_current_index()
 
-        try:
-            data, sr = sf.read(path, dtype="float32", always_2d=True)
-        except Exception as exc:  # noqa: BLE001
-            self.error = f"خطا در باز کردن فایل صوتی: {exc}"
+    def play_pause_toggle(self) -> bool:
+        if self._stream is None:
+            return self._play_current_index()
+        self._paused = not self._paused
+        return True
+
+    def next_track(self) -> bool:
+        if not self.playlist:
             return False
-
-        self._playback_data = data.mean(axis=1)
-        self._playback_pos = 0
-        self.file_name = path.replace("\\", "/").split("/")[-1]
-
-        def callback(outdata, frames, time_info, status):  # noqa: ANN001
-            assert self._playback_data is not None
-            start = self._playback_pos
-            end = start + frames
-            chunk = self._playback_data[start:end]
-            if len(chunk) < frames:
-                pad = frames - len(chunk)
-                chunk = np.concatenate([chunk, self._playback_data[:pad]])
-                self._playback_pos = pad  # loop back to start
-            else:
-                self._playback_pos = end
-            outdata[:, 0] = chunk
-            self._push_block(chunk)
-
-        try:
-            self._stream = sd.OutputStream(
-                samplerate=sr, channels=1, blocksize=1024, callback=callback,
-            )
-            self._stream.start()
-        except Exception as exc:  # noqa: BLE001
-            self.error = f"خطا در پخش صدا: {exc}"
+        if self.shuffle and len(self.playlist) > 1:
+            choices = [i for i in range(len(self.playlist)) if i != self.playlist_index]
+            self.playlist_index = random.choice(choices)
+            return self._play_current_index()
+        if self.playlist_index + 1 < len(self.playlist):
+            self.playlist_index += 1
+        elif self.repeat_all:
+            self.playlist_index = 0
+        else:
             return False
+        return self._play_current_index()
 
-        self.mode = "file"
-        self.error = None
+    def prev_track(self) -> bool:
+        if not self.playlist:
+            return False
+        if self.playlist_index - 1 >= 0:
+            self.playlist_index -= 1
+        elif self.repeat_all:
+            self.playlist_index = len(self.playlist) - 1
+        else:
+            self.playlist_index = 0
+        return self._play_current_index()
+
+    def remove_from_playlist(self, index: int) -> None:
+        if not (0 <= index < len(self.playlist)):
+            return
+        was_current = index == self.playlist_index
+        del self.playlist[index]
+        if not self.playlist:
+            self._stop_stream()
+            self.playlist_index = -1
+            self.mode = "demo"
+            return
+        if index < self.playlist_index:
+            self.playlist_index -= 1
+        elif was_current:
+            self.playlist_index = min(self.playlist_index, len(self.playlist) - 1)
+            self._play_current_index()
+
+    def clear_playlist(self) -> None:
+        self._stop_stream()
+        self.playlist = []
+        self.playlist_index = -1
+        self.mode = "demo"
+        self.file_name = None
+
+    def poll_track_finished(self) -> bool:
+        """Call periodically from the UI thread. Auto-advances the playlist
+        when the current track has finished; returns True if it did."""
+        if not self._track_ended:
+            return False
+        self._track_ended = False
+        if not self.next_track():
+            self.mode = "demo"
         return True
 
     def start_system_audio(self) -> bool:
@@ -169,6 +222,62 @@ class AudioEngine:
     # ------------------------------------------------------------------ #
     # internals
     # ------------------------------------------------------------------ #
+    def _play_current_index(self) -> bool:
+        if not (0 <= self.playlist_index < len(self.playlist)):
+            return False
+        return self._start_stream_for_path(self.playlist[self.playlist_index])
+
+    def _start_stream_for_path(self, path: str) -> bool:
+        self._stop_stream()
+        self._stop_loopback()
+
+        if sf is None or sd is None:
+            self.error = "برای پخش فایل باید pysoundfile و sounddevice نصب باشند."
+            return False
+
+        try:
+            data, sr = sf.read(path, dtype="float32", always_2d=True)
+        except Exception as exc:  # noqa: BLE001
+            self.error = f"خطا در باز کردن فایل صوتی: {exc}"
+            return False
+
+        self._playback_data = data.mean(axis=1)
+        self._playback_pos = 0
+        self._track_ended = False
+        self._paused = False
+        self.file_name = path.replace("\\", "/").split("/")[-1]
+
+        def callback(outdata, frames, time_info, status):  # noqa: ANN001
+            if self._paused:
+                outdata[:, 0] = 0.0
+                return
+            assert self._playback_data is not None
+            start = self._playback_pos
+            end = start + frames
+            chunk = self._playback_data[start:end]
+            if len(chunk) < frames:
+                pad = frames - len(chunk)
+                chunk = np.concatenate([chunk, np.zeros(pad, dtype=np.float32)])
+                self._playback_pos = end
+                self._track_ended = True
+            else:
+                self._playback_pos = end
+            outdata[:, 0] = chunk
+            self._push_block(chunk)
+
+        try:
+            self._stream = sd.OutputStream(
+                samplerate=sr, channels=1, blocksize=1024, callback=callback,
+            )
+            self._stream.start()
+        except Exception as exc:  # noqa: BLE001
+            self.error = f"خطا در پخش صدا: {exc}"
+            return False
+
+        self.mode = "file"
+        self.error = None
+        return True
+
     def _push_block(self, chunk: np.ndarray) -> None:
         with self._lock:
             n = len(chunk)
