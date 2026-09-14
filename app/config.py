@@ -87,6 +87,9 @@ class Config:
     gradient_colors: List[str] = field(default_factory=lambda: ["#a995ff", "#5ec8ff", "#ff6b6b"])
     background: str = "solid"
     background_image: str = ""
+    image_dim: float = 0.5          # dark overlay alpha for image background (0..1)
+    ai_colors: List[str] = field(default_factory=list)  # palette from Image AI scan
+    ai_mood: str = ""               # Persian mood description from Image AI scan
     sensitivity: float = 1.0
     smoothing: float = 0.72
     count: int = 80

@@ -112,7 +112,8 @@ class VisualizerWidget(QWidget):
 
         if cfg.background == "image" and self.background_image and not self.background_image.isNull():
             p.drawPixmap(self.rect(), self.background_image)
-            p.fillRect(0, 0, w, h, QColor(9, 9, 15, 130))
+            dim = int(255 * max(0.0, min(1.0, cfg.image_dim)))
+            p.fillRect(0, 0, w, h, QColor(9, 9, 15, dim))
         else:
             alpha = 60 if cfg.trails else 255
             p.fillRect(0, 0, w, h, QColor(9, 9, 15, alpha))

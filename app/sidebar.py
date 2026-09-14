@@ -407,6 +407,21 @@ class Sidebar(QWidget):
         self.bg_image_btn.setVisible(self.config.background == "image")
         self.col.addWidget(self.bg_image_btn)
 
+        self.ai_scan_btn = QPushButton("🤖 اسکن هوشمند تصویر (AI)")
+        self.ai_scan_btn.setToolTip(
+            "تحلیل تصویر با هوش مصنوعی: استخراج پالت رنگ غالب و تطبیق خودکار ویژولایزر با عکس"
+        )
+        self.ai_scan_btn.clicked.connect(self._run_ai_scan)
+        self.ai_scan_btn.setVisible(self.config.background == "image")
+        self.col.addWidget(self.ai_scan_btn)
+
+        self.ai_result_label = QLabel("")
+        self.ai_result_label.setObjectName("Hint")
+        self.ai_result_label.setWordWrap(True)
+        self.ai_result_label.setTextFormat(Qt.RichText)
+        self.ai_result_label.setVisible(False)
+        self.col.addWidget(self.ai_result_label)
+
         self.col.addWidget(_label("Mirror mode"))
         self.mirror_combo = QComboBox()
         for value, label in MIRROR_MODES:
@@ -503,15 +518,74 @@ class Sidebar(QWidget):
     def _on_bg_changed(self, index: int) -> None:
         value = self.bg_combo.itemData(index)
         self.config.background = value
-        self.bg_image_btn.setVisible(value == "image")
+        is_image = value == "image"
+        self.bg_image_btn.setVisible(is_image)
+        self.ai_scan_btn.setVisible(is_image)
+        if not is_image:
+            self.ai_result_label.setVisible(False)
 
     def _choose_bg_image(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "انتخاب تصویر پس‌زمینه", "", "Images (*.png *.jpg *.jpeg *.bmp)"
+            self, "انتخاب تصویر پس‌زمینه", "", "Images (*.png *.jpg *.jpeg *.bmp *.webp)"
         )
         if path:
             self.config.background_image = path
             self.visualizer.set_background_image(path)
+
+    # ---- Image AI ----------------------------------------------------- #
+    def _run_ai_scan(self) -> None:
+        """Scan the background image with the Image AI and restyle the
+        visualizer to match it: palette -> gradient, mood -> overlay dim."""
+        from .image_ai import analyze_image, load_pixels_qimage
+
+        path = self.config.background_image
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "انتخاب تصویر برای اسکن هوشمند", "",
+                "Images (*.png *.jpg *.jpeg *.bmp *.webp)",
+            )
+            if not path:
+                return
+            self.config.background_image = path
+            self.visualizer.set_background_image(path)
+
+        try:
+            result = analyze_image(load_pixels_qimage(path), k=5)
+        except Exception as exc:  # noqa: BLE001
+            self.ai_result_label.setText(f"⚠️ خطا در تحلیل تصویر: {exc}")
+            self.ai_result_label.setVisible(True)
+            return
+
+        # --- apply the AI's decisions to the live config ---------------- #
+        self.config.ai_colors = list(result.palette)
+        self.config.ai_mood = result.mood_fa
+        self.config.image_dim = result.overlay_dim
+        self.config.color_mode = "gradient"
+        self.config.gradient_colors = list(result.palette[:4])
+        self.config.accent = result.palette[0]
+        if result.suggested_mode:
+            self.config.mode = result.suggested_mode
+
+        # --- reflect everything back onto the controls ------------------ #
+        self.colormode_combo.setCurrentIndex(1)
+        self._set_accent(result.palette[0])
+        self._rebuild_gradient_stops()
+        self._update_color_mode_visibility()
+        try:
+            self.mode_combo.setCurrentIndex(
+                [m[0] for m in MODES].index(result.suggested_mode)
+            )
+        except ValueError:
+            pass
+
+        swatches = " ".join(
+            f'<font color="{c}">●</font>' for c in result.palette
+        )
+        self.ai_result_label.setText(
+            f"🤖 <b>نتیجه اسکن هوشمند</b><br>{result.mood_fa}<br>"
+            f"پالت: {swatches}<br>حالت پیشنهادی: {result.suggested_mode}"
+        )
+        self.ai_result_label.setVisible(True)
 
     # ------------------------------------------------------------------ #
     def _build_toggles_section(self) -> None:
@@ -643,6 +717,7 @@ class Sidebar(QWidget):
         self.mode_combo.setCurrentIndex([m[0] for m in MODES].index(cfg.mode))
         self.bg_combo.setCurrentIndex([b[0] for b in BACKGROUNDS].index(cfg.background))
         self.bg_image_btn.setVisible(cfg.background == "image")
+        self.ai_scan_btn.setVisible(cfg.background == "image")
         self.mirror_combo.setCurrentIndex([m[0] for m in MIRROR_MODES].index(cfg.mirror))
         self._set_accent(cfg.accent)
         self.colormode_combo.setCurrentIndex(0 if cfg.color_mode == "solid" else 1)
