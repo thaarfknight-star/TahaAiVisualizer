@@ -93,7 +93,9 @@ def _mood_stats(pixels: np.ndarray) -> dict:
     lum = 0.299 * r + 0.587 * g + 0.114 * b
     mx = rgb.max(axis=1)
     mn = rgb.min(axis=1)
-    sat = np.where(mx > 1e-6, (mx - mn) / mx, 0.0)
+    sat = np.zeros_like(mx)
+    nz = mx > 1e-6
+    sat[nz] = (mx[nz] - mn[nz]) / mx[nz]
     return {
         "brightness": float(lum.mean()),
         "saturation": float(sat.mean()),
@@ -182,3 +184,124 @@ def load_pixels_qimage(path: str) -> np.ndarray:
     arr = np.frombuffer(ptr, dtype=np.uint8, count=h * img.bytesPerLine())
     arr = arr.reshape(h, img.bytesPerLine())[:, : w * 3].reshape(h, w, 3)
     return arr.copy()
+
+
+# =========================================================================== #
+# PART 2 — visual structure analysis: design a NEW visualizer from the image
+# =========================================================================== #
+import hashlib
+
+
+@dataclass
+class GeneratedVisualizer:
+    """A brand-new visualizer mode designed from one image's appearance."""
+    layout: str = "rings"        # rings | skyline | burst | flow | shards | bloom
+    layout_fa: str = ""          # Persian layout name
+    seed: int = 0                # deterministic per image -> same image, same visualizer
+    density: int = 80            # number of visual elements
+    sharpness: float = 0.5       # 0..1 angular vs smooth rendering
+
+
+LAYOUT_NAMES_FA = {
+    "rings": "حلقه‌های پالس",
+    "skyline": "خط آسمان",
+    "burst": "انفجار ستاره‌ای",
+    "flow": "جریان",
+    "shards": "خرده‌شیشه",
+    "bloom": "شکوفا",
+}
+
+
+def _luminance(pixels: np.ndarray) -> np.ndarray:
+    rgb = pixels[:, :, :3].astype(np.float64) / 255.0
+    return 0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2]
+
+
+def _sobel(gray: np.ndarray):
+    gx = np.zeros_like(gray)
+    gy = np.zeros_like(gray)
+    gx[:, 1:-1] = gray[:, 2:] - gray[:, :-2]
+    gy[1:-1, :] = gray[2:, :] - gray[:-2, :]
+    return gx, gy
+
+
+def _corr(a: np.ndarray, b: np.ndarray) -> float:
+    a = a.ravel().astype(np.float64)
+    b = b.ravel().astype(np.float64)
+    sa, sb = a.std(), b.std()
+    if sa < 1e-9 or sb < 1e-9:
+        return 0.0
+    return float(((a - a.mean()) * (b - b.mean())).mean() / (sa * sb))
+
+
+def analyze_structure(pixels: np.ndarray) -> GeneratedVisualizer:
+    """Look at the image's visual structure and design a new visualizer for it.
+
+    Rules (documented, deterministic):
+    - strong rotational symmetry + bright center -> "burst" (rays from center)
+    - strong rotational symmetry            -> "rings"  (concentric pulse rings)
+    - dominant horizontal structure        -> "skyline" (bottom-up bars)
+    - very edgy / textured                 -> "shards" (angular fragments)
+    - very smooth / low detail             -> "flow"   (smooth ribbons)
+    - otherwise                            -> "bloom"  (organic petals)
+    """
+    if pixels.ndim != 3 or pixels.shape[2] < 3:
+        raise ValueError("pixels باید آرایه‌ای به شکل (H, W, 3) باشد")
+    rgb = pixels[:, :, :3]
+    h, w = rgb.shape[:2]
+    scale = min(1.0, 160.0 / max(h, w))
+    if scale < 1.0:
+        nh, nw = max(1, int(h * scale)), max(1, int(w * scale))
+        ys = np.linspace(0, h - 1, nh).astype(int)
+        xs = np.linspace(0, w - 1, nw).astype(int)
+        small = rgb[ys][:, xs]
+    else:
+        small = rgb
+
+    gray = _luminance(small)
+    gx, gy = _sobel(gray)
+    mag = np.hypot(gx, gy)
+    edge_density = float((mag > 0.12).mean())
+    h_energy = float(np.abs(gy).mean())   # horizontal edges
+    v_energy = float(np.abs(gx).mean())   # vertical edges
+
+    # rotational symmetry: center square vs its 90-degree rotation
+    side = min(gray.shape)
+    cy, cx = gray.shape[0] // 2, gray.shape[1] // 2
+    crop = gray[cy - side // 2: cy + side // 2, cx - side // 2: cx + side // 2]
+    radial = _corr(crop, np.rot90(crop))
+
+    # mirror symmetry
+    sym_h = _corr(gray, gray[::-1, :])
+    sym_v = _corr(gray, gray[:, ::-1])
+
+    # is the brightness concentrated in the center?
+    ch0, ch1 = h // 3, 2 * h // 3
+    cw0, cw1 = w // 3, 2 * w // 3
+    center_box = gray[ch0:ch1, cw0:cw1]
+    center_energy = float(center_box.mean() / max(1e-6, gray.mean())) if center_box.size else 1.0
+
+    if radial > 0.45 and center_energy > 1.05:
+        layout = "burst"
+    elif radial > 0.45:
+        layout = "rings"
+    elif h_energy > 1.7 * v_energy and h_energy > 0.02:
+        layout = "skyline"
+    elif edge_density > 0.20:
+        layout = "shards"
+    elif edge_density < 0.06:
+        layout = "flow"
+    else:
+        layout = "bloom"
+
+    seed = int(hashlib.md5(np.ascontiguousarray(small).tobytes()).hexdigest()[:8], 16)
+    density = int(min(140, max(40, edge_density * 500)))
+    sharpness = round(float(min(1.0, max(0.0, (edge_density - 0.05) * 4))), 2)
+
+    return GeneratedVisualizer(
+        layout=layout,
+        layout_fa=LAYOUT_NAMES_FA[layout],
+        seed=seed,
+        density=density,
+        sharpness=sharpness,
+    )

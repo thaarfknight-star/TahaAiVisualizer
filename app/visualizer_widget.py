@@ -99,6 +99,7 @@ class VisualizerWidget(QWidget):
             "vortex": self._draw_vortex,
             "constellation": self._draw_constellation,
             "ribbon": self._draw_ribbon,
+            "ai_generated": self._draw_ai_generated,
         }
         drawers.get(cfg.mode, self._draw_spectrum)(p, w, h, freq)
         p.end()
@@ -603,3 +604,144 @@ class VisualizerWidget(QWidget):
                     p.drawLine(prev, pt)
                 prev = pt
                 x += step
+
+    # AI-generated modes -------------------------------------------------- #
+    # Each image gets its own visualizer: the layout is chosen by
+    # app.image_ai.analyze_structure() and the element placement is seeded
+    # from the image content, so the same image always yields the same show.
+    def _ai_rng(self):
+        return random.Random(self.config.ai_seed)
+
+    def _draw_ai_generated(self, p, w, h, freq) -> None:
+        layout = getattr(self.config, "ai_layout", "rings")
+        {
+            "rings": self._draw_ai_rings,
+            "skyline": self._draw_ai_skyline,
+            "burst": self._draw_ai_burst,
+            "flow": self._draw_ai_flow,
+            "shards": self._draw_ai_shards,
+            "bloom": self._draw_ai_bloom,
+        }.get(layout, self._draw_ai_rings)(p, w, h, freq)
+
+    def _draw_ai_rings(self, p, w, h, freq) -> None:
+        cfg = self.config
+        cx, cy = w / 2, h / 2
+        rng = self._ai_rng()
+        n = max(6, int(cfg.ai_density / 10))
+        max_r = min(w, h) * 0.46
+        jitters = [rng.uniform(0.85, 1.15) for _ in range(n)]
+        p.setBrush(Qt.NoBrush)
+        for i in range(n):
+            t = i / n
+            q = self._audio_value(i, n, freq)
+            r = 12 + t * max_r * jitters[i] + q * 22 * cfg.sensitivity
+            pen = self._pen(t)
+            pen.setColor(self._accent(0.2 + 0.75 * q, t))
+            pen.setWidthF(max(1.0, cfg.thickness * (0.5 + q)))
+            p.setPen(pen)
+            p.drawEllipse(QPointF(cx, cy), r, r)
+
+    def _draw_ai_skyline(self, p, w, h, freq) -> None:
+        cfg = self.config
+        rng = self._ai_rng()
+        n = max(16, int(cfg.ai_density))
+        widths = [rng.uniform(0.5, 1.4) for _ in range(n)]
+        total = sum(widths)
+        x = 0.0
+        p.setPen(Qt.NoPen)
+        for i in range(n):
+            bw = w * widths[i] / total
+            q = self._audio_value(i, n, freq)
+            hh = 6 + q * h * 0.78
+            p.setBrush(self._accent(0.25 + 0.75 * q, i / n))
+            p.drawRect(QRectF(x + 1, h - hh, bw - 2, hh))
+            x += bw
+
+    def _draw_ai_burst(self, p, w, h, freq) -> None:
+        cfg = self.config
+        cx, cy = w / 2, h / 2
+        rng = self._ai_rng()
+        n = max(24, int(cfg.ai_density))
+        angles = sorted(rng.uniform(0, math.pi * 2) for _ in range(n))
+        R0 = min(w, h) * 0.06
+        maxlen = min(w, h) * 0.46
+        pen = self._pen()
+        for i, a in enumerate(angles):
+            a += self.phase * 0.25
+            q = self._audio_value(i, n, freq)
+            r = R0 + q * maxlen * (0.7 + 0.3 * math.sin(self.phase * 2 + i))
+            pen.setColor(self._accent(0.2 + 0.8 * q, i / n))
+            pen.setWidthF(max(1.0, cfg.thickness * (0.4 + q)))
+            p.setPen(pen)
+            p.drawLine(QPointF(cx + math.cos(a) * R0, cy + math.sin(a) * R0),
+                       QPointF(cx + math.cos(a) * r, cy + math.sin(a) * r))
+
+    def _draw_ai_flow(self, p, w, h, freq) -> None:
+        cfg = self.config
+        rng = self._ai_rng()
+        layers = 5
+        phases = [rng.uniform(0, math.pi * 2) for _ in range(layers)]
+        for layer in range(layers):
+            lt = layer / layers
+            pen = self._pen(lt)
+            prev = None
+            step = 7
+            x = 0.0
+            while x <= w:
+                q = self._audio_value(x / step, max(1.0, w / step), freq)
+                y = (h * (0.25 + lt * 0.25)
+                     + math.sin(x * 0.016 + self.phase * (1.4 + lt) + phases[layer]) * q * h * 0.24)
+                pt = QPointF(x, y)
+                if prev is not None:
+                    pen.setColor(self._accent(0.18 + 0.65 * q, lt))
+                    p.setPen(pen)
+                    p.drawLine(prev, pt)
+                prev = pt
+                x += step
+
+    def _draw_ai_shards(self, p, w, h, freq) -> None:
+        cfg = self.config
+        rng = self._ai_rng()
+        n = max(30, int(cfg.ai_density))
+        spots = [(rng.uniform(0.05, 0.95), rng.uniform(0.05, 0.95),
+                  rng.uniform(0, math.pi * 2), rng.uniform(6, 26)) for _ in range(n)]
+        p.setPen(Qt.NoPen)
+        for i, (fx, fy, ang, size) in enumerate(spots):
+            q = self._audio_value(i, n, freq)
+            s = size * (0.4 + q * 1.6 * cfg.sensitivity)
+            a = ang + self.phase * 0.4
+            x, y = fx * w, fy * h
+            dx, dy = math.cos(a) * s, math.sin(a) * s
+            px, py = -dy * 0.45, dx * 0.45
+            p.setBrush(self._accent(0.15 + 0.7 * q, i / n))
+            p.drawPolygon([QPointF(x + dx, y + dy),
+                           QPointF(x - dx, y - dy),
+                           QPointF(x + px, y + py)])
+
+    def _draw_ai_bloom(self, p, w, h, freq) -> None:
+        cfg = self.config
+        cx, cy = w / 2, h / 2
+        rng = self._ai_rng()
+        petals = max(5, min(12, int(cfg.ai_density / 12)))
+        n = 140
+        R = min(w, h) * 0.05
+        maxr = min(w, h) * 0.42
+        twist = rng.uniform(-0.6, 0.6)
+        pen = self._pen()
+        prev = None
+        first = None
+        for i in range(n + 1):
+            t = i / n
+            a = t * math.pi * 2
+            q = self._audio_value(i, n, freq)
+            r = R + maxr * (0.35 + 0.65 * q) * abs(math.sin(petals * a / 2 + self.phase + twist))
+            pt = QPointF(cx + math.cos(a) * r, cy + math.sin(a) * r)
+            if first is None:
+                first = pt
+            if prev is not None:
+                pen.setColor(self._accent(0.25 + 0.7 * q, t))
+                p.setPen(pen)
+                p.drawLine(prev, pt)
+            prev = pt
+        if prev is not None and first is not None:
+            p.drawLine(prev, first)

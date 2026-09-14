@@ -534,9 +534,10 @@ class Sidebar(QWidget):
 
     # ---- Image AI ----------------------------------------------------- #
     def _run_ai_scan(self) -> None:
-        """Scan the background image with the Image AI and restyle the
-        visualizer to match it: palette -> gradient, mood -> overlay dim."""
-        from .image_ai import analyze_image, load_pixels_qimage
+        """Scan the background image with the Image AI:
+        1. palette + mood -> recolor the visualizer to match the image,
+        2. visual structure -> DESIGN A NEW visualizer mode for this image."""
+        from .image_ai import analyze_image, analyze_structure, load_pixels_qimage
 
         path = self.config.background_image
         if not path:
@@ -550,21 +551,29 @@ class Sidebar(QWidget):
             self.visualizer.set_background_image(path)
 
         try:
-            result = analyze_image(load_pixels_qimage(path), k=5)
+            pixels = load_pixels_qimage(path)
+            result = analyze_image(pixels, k=5)
+            gen = analyze_structure(pixels)
         except Exception as exc:  # noqa: BLE001
             self.ai_result_label.setText(f"⚠️ خطا در تحلیل تصویر: {exc}")
             self.ai_result_label.setVisible(True)
             return
 
-        # --- apply the AI's decisions to the live config ---------------- #
+        # --- apply the AI's color decisions ------------------------------ #
         self.config.ai_colors = list(result.palette)
         self.config.ai_mood = result.mood_fa
         self.config.image_dim = result.overlay_dim
         self.config.color_mode = "gradient"
         self.config.gradient_colors = list(result.palette[:4])
         self.config.accent = result.palette[0]
-        if result.suggested_mode:
-            self.config.mode = result.suggested_mode
+
+        # --- apply the AI's NEW visualizer design ------------------------ #
+        self.config.ai_layout = gen.layout
+        self.config.ai_layout_fa = gen.layout_fa
+        self.config.ai_seed = gen.seed
+        self.config.ai_density = gen.density
+        self.config.ai_sharpness = gen.sharpness
+        self.config.mode = "ai_generated"
 
         # --- reflect everything back onto the controls ------------------ #
         self.colormode_combo.setCurrentIndex(1)
@@ -573,7 +582,7 @@ class Sidebar(QWidget):
         self._update_color_mode_visibility()
         try:
             self.mode_combo.setCurrentIndex(
-                [m[0] for m in MODES].index(result.suggested_mode)
+                [m[0] for m in MODES].index("ai_generated")
             )
         except ValueError:
             pass
@@ -583,7 +592,8 @@ class Sidebar(QWidget):
         )
         self.ai_result_label.setText(
             f"🤖 <b>نتیجه اسکن هوشمند</b><br>{result.mood_fa}<br>"
-            f"پالت: {swatches}<br>حالت پیشنهادی: {result.suggested_mode}"
+            f"پالت: {swatches}<br>"
+            f"✨ ویژولایزر جدید ساخته شد: <b>{gen.layout_fa}</b>"
         )
         self.ai_result_label.setVisible(True)
 

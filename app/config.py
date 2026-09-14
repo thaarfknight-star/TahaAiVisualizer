@@ -39,6 +39,7 @@ MODES = [
     ("vortex", "Vortex"),
     ("constellation", "Constellation"),
     ("ribbon", "Ribbon Flow"),
+    ("ai_generated", "AI Generated"),
 ]
 
 BACKGROUNDS = [
@@ -90,6 +91,11 @@ class Config:
     image_dim: float = 0.5          # dark overlay alpha for image background (0..1)
     ai_colors: List[str] = field(default_factory=list)  # palette from Image AI scan
     ai_mood: str = ""               # Persian mood description from Image AI scan
+    ai_layout: str = "rings"        # generated visualizer layout (rings|skyline|burst|flow|shards|bloom)
+    ai_layout_fa: str = ""          # Persian layout name
+    ai_seed: int = 0                # deterministic per-image seed
+    ai_density: int = 80            # element count of the generated visualizer
+    ai_sharpness: float = 0.5       # 0..1 angular vs smooth
     sensitivity: float = 1.0
     smoothing: float = 0.72
     count: int = 80
